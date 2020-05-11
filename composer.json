@@ -29,7 +29,9 @@
         "ext-pq": "*",
         "amphp/phpunit-util": "^1.1.2",
         "phpunit/phpunit": "^8 | ^7",
-        "amphp/php-cs-fixer-config": "dev-master"
+        "amphp/php-cs-fixer-config": "dev-master",
+        "daverandom/pecl-pq-stubs": "^0.5.6",
+        "symfony/var-dumper": "^5.0"
     },
     "autoload": {
         "psr-4": {

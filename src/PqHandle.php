@@ -242,7 +242,7 @@ final class PqHandle implements Handle
         }
     }
 
-    private function fetch(): \Generator
+    private function fetch(): ?\Generator
     {
         if (!$this->handle->busy) { // Results buffered.
             $result = $this->handle->getResult();

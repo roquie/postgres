@@ -4,6 +4,7 @@ namespace Amp\Postgres;
 
 use Amp\Deferred;
 use Amp\Emitter;
+use Amp\Failure;
 use Amp\Loop;
 use Amp\Promise;
 use Amp\Sql\ConnectionException;
@@ -110,7 +111,12 @@ final class PgSqlHandle implements Handle
                 return;
             }
 
-            $deferred->resolve(\pg_get_result($handle));
+            $array = [];
+            while ($result = \pg_get_result($handle)) {
+                $array[] = $result;
+            }
+
+            $deferred->resolve($array);
 
             if (!$deferred && empty($listeners)) {
                 Loop::disable($watcher);
@@ -240,41 +246,52 @@ final class PgSqlHandle implements Handle
     }
 
     /**
-     * @param resource $result PostgreSQL result resource.
+     * @param array<resource> $results PostgreSQL result resource.
      *
-     * @return \Amp\Sql\CommandResult|ResultSet
+     * @return \Amp\Sql\CommandResult|ResultSet|array<\Amp\Sql\CommandResult|ResultSet>
      *
      * @throws FailureException
      * @throws QueryError
      */
-    private function createResult($result)
+    private function createResult(array $results)
     {
-        switch (\pg_result_status($result, \PGSQL_STATUS_LONG)) {
-            case \PGSQL_EMPTY_QUERY:
-                throw new QueryError("Empty query string");
+        $array = [];
+        foreach ($results as $result) {
+            switch (\pg_result_status($result, \PGSQL_STATUS_LONG)) {
+                case \PGSQL_EMPTY_QUERY:
+                    throw new QueryError("Empty query string");
 
-            case \PGSQL_COMMAND_OK:
-                return new PgSqlCommandResult($result);
+                case \PGSQL_COMMAND_OK:
+                    $array[] = new PgSqlCommandResult($result);
+                    break;
 
-            case \PGSQL_TUPLES_OK:
-                return new PgSqlResultSet($result);
+                case \PGSQL_TUPLES_OK:
+                    $array[] = new PgSqlResultSet($result);
+                    break;
 
-            case \PGSQL_NONFATAL_ERROR:
-            case \PGSQL_FATAL_ERROR:
-                $diagnostics = [];
-                foreach (self::DIAGNOSTIC_CODES as $fieldCode => $desciption) {
-                    $diagnostics[$desciption] = \pg_result_error_field($result, $fieldCode);
-                }
-                throw new QueryExecutionError(\pg_result_error($result), $diagnostics);
+                case \PGSQL_NONFATAL_ERROR:
+                case \PGSQL_FATAL_ERROR:
+                    $diagnostics = [];
+                    foreach (self::DIAGNOSTIC_CODES as $fieldCode => $description) {
+                        $diagnostics[$description] = \pg_result_error_field($result, $fieldCode);
+                    }
+                    throw new QueryExecutionError(\pg_result_error($result), $diagnostics);
 
-            case \PGSQL_BAD_RESPONSE:
-                throw new FailureException(\pg_result_error($result));
+                case \PGSQL_BAD_RESPONSE:
+                    throw new FailureException(\pg_result_error($result));
 
-            default:
-                // @codeCoverageIgnoreStart
-                throw new FailureException("Unknown result status");
-                // @codeCoverageIgnoreEnd
+                default:
+                    // @codeCoverageIgnoreStart
+                    throw new FailureException("Unknown result status");
+                    // @codeCoverageIgnoreEnd
+            }
         }
+
+        if (\count($array) < 2) {
+            return $array[0];
+        }
+
+        return $array;
     }
 
     /**
@@ -384,28 +401,38 @@ final class PgSqlHandle implements Handle
 
             try {
                 yield ($storage->promise = call(function () use ($name, $modifiedSql) {
-                    $result = yield from $this->send("pg_send_prepare", $name, $modifiedSql);
+                    $results = yield from $this->send("pg_send_prepare", $name, $modifiedSql);
 
-                    switch (\pg_result_status($result, \PGSQL_STATUS_LONG)) {
-                        case \PGSQL_COMMAND_OK:
-                            return $name; // Statement created successfully.
+                    $array = [];
+                    foreach ($results as $result) {
+                        switch (\pg_result_status($result, \PGSQL_STATUS_LONG)) {
+                            case \PGSQL_COMMAND_OK:
+                                $array[] = $name; // Statement created successfully.
+                                break;
 
-                        case \PGSQL_NONFATAL_ERROR:
-                        case \PGSQL_FATAL_ERROR:
-                            $diagnostics = [];
-                            foreach (self::DIAGNOSTIC_CODES as $fieldCode => $description) {
-                                $diagnostics[$description] = \pg_result_error_field($result, $fieldCode);
-                            }
-                            throw new QueryExecutionError(\pg_result_error($result), $diagnostics);
+                            case \PGSQL_NONFATAL_ERROR:
+                            case \PGSQL_FATAL_ERROR:
+                                $diagnostics = [];
+                                foreach (self::DIAGNOSTIC_CODES as $fieldCode => $description) {
+                                    $diagnostics[$description] = \pg_result_error_field($result, $fieldCode);
+                                }
+                                throw new QueryExecutionError(\pg_result_error($result), $diagnostics);
 
-                        case \PGSQL_BAD_RESPONSE:
-                            throw new FailureException(\pg_result_error($result));
+                            case \PGSQL_BAD_RESPONSE:
+                                throw new FailureException(\pg_result_error($result));
 
-                        default:
-                            // @codeCoverageIgnoreStart
-                            throw new FailureException("Unknown result status");
-                            // @codeCoverageIgnoreEnd
+                            default:
+                                // @codeCoverageIgnoreStart
+                                throw new FailureException("Unknown result status");
+                                // @codeCoverageIgnoreEnd
+                        }
                     }
+
+                    if (\count($array) < 2) {
+                        return $array[0];
+                    }
+
+                    return $array;
                 }));
             } catch (\Throwable $exception) {
                 unset($this->statements[$name]);
